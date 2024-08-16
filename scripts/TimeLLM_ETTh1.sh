@@ -3,7 +3,7 @@ train_epochs=100
 learning_rate=0.01
 llama_layers=32
 
-master_port=00097
+master_port=15294
 num_process=8
 batch_size=24
 d_model=32
