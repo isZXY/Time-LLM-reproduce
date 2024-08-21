@@ -42,14 +42,14 @@ class Model(nn.Module):
 
         if configs.llm_model == 'LLAMA':
             # self.llama_config = LlamaConfig.from_pretrained('/mnt/alps/modelhub/pretrained_model/LLaMA/7B_hf/')
-            self.llama_config = LlamaConfig.from_pretrained('huggyllama/llama-7b')
+            self.llama_config = LlamaConfig.from_pretrained('./llama-7b')
             self.llama_config.num_hidden_layers = configs.llm_layers
             self.llama_config.output_attentions = True
             self.llama_config.output_hidden_states = True
             try:
                 self.llm_model = LlamaModel.from_pretrained(
                     # "/mnt/alps/modelhub/pretrained_model/LLaMA/7B_hf/",
-                    'huggyllama/llama-7b',
+                    './llama-7b',
                     trust_remote_code=True,
                     local_files_only=True,
                     config=self.llama_config,
@@ -59,7 +59,7 @@ class Model(nn.Module):
                 print("Local model files not found. Attempting to download...")
                 self.llm_model = LlamaModel.from_pretrained(
                     # "/mnt/alps/modelhub/pretrained_model/LLaMA/7B_hf/",
-                    'huggyllama/llama-7b',
+                    './llama-7b',
                     trust_remote_code=True,
                     local_files_only=False,
                     config=self.llama_config,
@@ -68,7 +68,7 @@ class Model(nn.Module):
             try:
                 self.tokenizer = LlamaTokenizer.from_pretrained(
                     # "/mnt/alps/modelhub/pretrained_model/LLaMA/7B_hf/tokenizer.model",
-                    'huggyllama/llama-7b',
+                    './llama-7b',
                     trust_remote_code=True,
                     local_files_only=True
                 )
@@ -76,7 +76,7 @@ class Model(nn.Module):
                 print("Local tokenizer files not found. Atempting to download them..")
                 self.tokenizer = LlamaTokenizer.from_pretrained(
                     # "/mnt/alps/modelhub/pretrained_model/LLaMA/7B_hf/tokenizer.model",
-                    'huggyllama/llama-7b',
+                    './llama-7b',
                     trust_remote_code=True,
                     local_files_only=False
                 )
@@ -161,16 +161,16 @@ class Model(nn.Module):
             self.tokenizer.pad_token = pad_token
 
         for param in self.llm_model.parameters():
-            param.requires_grad = False
+            param.requires_grad = False # 冻结大模型的参数
 
-        if configs.prompt_domain:
+        if configs.prompt_domain: # 模型的描述
             self.description = configs.content
         else:
             self.description = 'The Electricity Transformer Temperature (ETT) is a crucial indicator in the electric power long-term deployment.'
 
-        self.dropout = nn.Dropout(configs.dropout)
+        self.dropout = nn.Dropout(configs.dropout) # 随机置零神经元以防过拟合
 
-        self.patch_embedding = PatchEmbedding(
+        self.patch_embedding = PatchEmbedding( 
             configs.d_model, self.patch_len, self.stride, configs.dropout)
 
         self.word_embeddings = self.llm_model.get_input_embeddings().weight
@@ -178,7 +178,7 @@ class Model(nn.Module):
         self.num_tokens = 1000
         self.mapping_layer = nn.Linear(self.vocab_size, self.num_tokens)
 
-        self.reprogramming_layer = ReprogrammingLayer(configs.d_model, configs.n_heads, self.d_ff, self.d_llm)
+        self.reprogramming_layer = ReprogrammingLayer(configs.d_model, configs.n_heads, self.d_ff, self.d_llm) 
 
         self.patch_nums = int((configs.seq_len - self.patch_len) / self.stride + 2)
         self.head_nf = self.d_ff * self.patch_nums
@@ -198,20 +198,23 @@ class Model(nn.Module):
         return None
 
     def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
+        # 1. Input Embedding
+        ##1.1normalize
+        x_enc = self.normalize_layers(x_enc, 'norm') # :TODO normalize输入维度的数据 
 
-        x_enc = self.normalize_layers(x_enc, 'norm')
+        B, T, N = x_enc.size()  #获取输入数据的大小 B 表示批量大小，T 表示时间步数，N 表示特征维度
+        x_enc = x_enc.permute(0, 2, 1).contiguous().reshape(B * N, T, 1) # 变形为(B，N，T), 然后reshape size = (B * N, T, 1)
 
-        B, T, N = x_enc.size()
-        x_enc = x_enc.permute(0, 2, 1).contiguous().reshape(B * N, T, 1)
-
+        # 求出数据的统计值：最小，最大，中位数，一阶导数，时滞特征
         min_values = torch.min(x_enc, dim=1)[0]
         max_values = torch.max(x_enc, dim=1)[0]
         medians = torch.median(x_enc, dim=1).values
         lags = self.calcute_lags(x_enc)
         trends = x_enc.diff(dim=1).sum(dim=1)
 
+        # 输入模型的prompt list
         prompt = []
-        for b in range(x_enc.shape[0]):
+        for b in range(x_enc.shape[0]): # 对于每个Batch的每个维度的特征(共B*N)
             min_values_str = str(min_values[b].tolist()[0])
             max_values_str = str(max_values[b].tolist()[0])
             median_values_str = str(medians[b].tolist()[0])
@@ -227,20 +230,26 @@ class Model(nn.Module):
                 f"top 5 lags are : {lags_values_str}<|<end_prompt>|>"
             )
 
-            prompt.append(prompt_)
+            prompt.append(prompt_) # prompt的第一部分（文本提示词描述）
 
-        x_enc = x_enc.reshape(B, N, T).permute(0, 2, 1).contiguous()
+        x_enc = x_enc.reshape(B, N, T).permute(0, 2, 1).contiguous() # 修改回B,T,N的形状
 
-        prompt = self.tokenizer(prompt, return_tensors="pt", padding=True, truncation=True, max_length=2048).input_ids
-        prompt_embeddings = self.llm_model.get_input_embeddings()(prompt.to(x_enc.device))  # (batch, prompt_token, dim)
-
-        source_embeddings = self.mapping_layer(self.word_embeddings.permute(1, 0)).permute(1, 0)
-
-        x_enc = x_enc.permute(0, 2, 1).contiguous()
-        enc_out, n_vars = self.patch_embedding(x_enc.to(torch.bfloat16))
+        prompt = self.tokenizer(prompt, return_tensors="pt", padding=True, truncation=True, max_length=2048).input_ids # 将prompt tokenize
+        prompt_embeddings = self.llm_model.get_input_embeddings()(prompt.to(x_enc.device))  #将 prompt Embedding为高维向量
+        ## 1.3 线性层Embedding到dm
+        source_embeddings = self.mapping_layer(self.word_embeddings.permute(1, 0)).permute(1, 0) # mapping_layer是使用一个线性层将llama的token嵌入矩阵映射到一个1000维度的token矩阵
+        ## 2.1 通过patch_embedding重编码输入
+        x_enc = x_enc.permute(0, 2, 1).contiguous()# 变为B,N,T形状
+        enc_out, n_vars = self.patch_embedding(x_enc.to(torch.bfloat16)) # 通过patch_embedding重编码输入
+        ## 2.2 Patch 重编程
         enc_out = self.reprogramming_layer(enc_out, source_embeddings, source_embeddings)
+
+        # 将prompt和reprogram的内容concat起来输入llama 
         llama_enc_out = torch.cat([prompt_embeddings, enc_out], dim=1)
-        dec_out = self.llm_model(inputs_embeds=llama_enc_out).last_hidden_state
+
+        dec_out = self.llm_model(inputs_embeds=llama_enc_out).last_hidden_state # 获取最后一层隐层输出
+
+        # 下面开始Output Projection
         dec_out = dec_out[:, :, :self.d_ff]
 
         dec_out = torch.reshape(

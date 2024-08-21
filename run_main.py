@@ -53,29 +53,29 @@ parser.add_argument('--freq', type=str, default='h',
 parser.add_argument('--checkpoints', type=str, default='./checkpoints/', help='location of model checkpoints')
 
 # forecasting task
-parser.add_argument('--seq_len', type=int, default=96, help='input sequence length')
-parser.add_argument('--label_len', type=int, default=48, help='start token length')
-parser.add_argument('--pred_len', type=int, default=96, help='prediction sequence length')
-parser.add_argument('--seasonal_patterns', type=str, default='Monthly', help='subset for M4')
+parser.add_argument('--seq_len', type=int, default=96, help='input sequence length') # 多少时间步长的历史数据，即T time steps
+parser.add_argument('--label_len', type=int, default=48, help='start token length') # 定义模型在进行预测时的起始部分长度？
+parser.add_argument('--pred_len', type=int, default=96, help='prediction sequence length') # 模型要预测的未来时间步长的数量，即H
+parser.add_argument('--seasonal_patterns', type=str, default='Monthly', help='subset for M4') # 季节性模式
 
 # model define
-parser.add_argument('--enc_in', type=int, default=7, help='encoder input size')
-parser.add_argument('--dec_in', type=int, default=7, help='decoder input size')
-parser.add_argument('--c_out', type=int, default=7, help='output size')
-parser.add_argument('--d_model', type=int, default=16, help='dimension of model')
-parser.add_argument('--n_heads', type=int, default=8, help='num of heads')
-parser.add_argument('--e_layers', type=int, default=2, help='num of encoder layers')
-parser.add_argument('--d_layers', type=int, default=1, help='num of decoder layers')
-parser.add_argument('--d_ff', type=int, default=32, help='dimension of fcn')
-parser.add_argument('--moving_avg', type=int, default=25, help='window size of moving average')
-parser.add_argument('--factor', type=int, default=1, help='attn factor')
-parser.add_argument('--dropout', type=float, default=0.1, help='dropout')
+parser.add_argument('--enc_in', type=int, default=7, help='encoder input size') # 输入维度，即输入特征的数量，应该是N
+parser.add_argument('--dec_in', type=int, default=7, help='decoder input size') # 解码器所需的输入特征数量
+parser.add_argument('--c_out', type=int, default=7, help='output size') # 模型的输出维度，即输出特征的数量
+parser.add_argument('--d_model', type=int, default=16, help='dimension of model') # 模型的隐藏层维度
+parser.add_argument('--n_heads', type=int, default=8, help='num of heads') # 多头注意力机制中头的数量
+parser.add_argument('--e_layers', type=int, default=2, help='num of encoder layers') # 编码器的层数
+parser.add_argument('--d_layers', type=int, default=1, help='num of decoder layers') # 解码器的层数
+parser.add_argument('--d_ff', type=int, default=32, help='dimension of fcn') # 前馈神经网络的维度
+parser.add_argument('--moving_avg', type=int, default=25, help='window size of moving average') # 移动平均窗口的大小
+parser.add_argument('--factor', type=int, default=1, help='attn factor') # 注意力机制中的缩放因子
+parser.add_argument('--dropout', type=float, default=0.1, help='dropout') # dropout 的比例
 parser.add_argument('--embed', type=str, default='timeF',
-                    help='time features encoding, options:[timeF, fixed, learned]')
-parser.add_argument('--activation', type=str, default='gelu', help='activation')
-parser.add_argument('--output_attention', action='store_true', help='whether to output attention in encoder')
-parser.add_argument('--patch_len', type=int, default=16, help='patch length')
-parser.add_argument('--stride', type=int, default=8, help='stride')
+                    help='time features encoding, options:[timeF, fixed, learned]') # 时间特征的编码方式
+parser.add_argument('--activation', type=str, default='gelu', help='activation') # 激活函数
+parser.add_argument('--output_attention', action='store_true', help='whether to output attention in encoder') # 是否在编码器中输出注意力权重
+parser.add_argument('--patch_len', type=int, default=16, help='patch length') # patch）长度
+parser.add_argument('--stride', type=int, default=8, help='stride') # 步幅
 parser.add_argument('--prompt_domain', type=int, default=0, help='')
 parser.add_argument('--llm_model', type=str, default='LLAMA', help='LLM model') # LLAMA, GPT2, BERT
 parser.add_argument('--llm_dim', type=int, default='4096', help='LLM model dimension')# LLama7b:4096; GPT2-small:768; BERT-base:768
