@@ -15,30 +15,32 @@ class Dataset_ETT_hour(Dataset):
                  features='S', data_path='ETTh1.csv',
                  target='OT', scale=True, timeenc=0, freq='h', percent=100,
                  seasonal_patterns=None):
+        # 设置各类sequence的长度
         if size == None:
-            self.seq_len = 24 * 4 * 4
-            self.label_len = 24 * 4
-            self.pred_len = 24 * 4
+            self.seq_len = 24 * 4 * 4 # 多少时间步长的历史数据，即T time steps
+            self.label_len = 24 * 4  # 定义模型在进行预测时的起始部分长度
+            self.pred_len = 24 * 4 # 模型要预测的未来时间步长的数量，即H
         else:
             self.seq_len = size[0]
             self.label_len = size[1]
             self.pred_len = size[2]
+
+
         # init
         assert flag in ['train', 'test', 'val']
         type_map = {'train': 0, 'val': 1, 'test': 2}
         self.set_type = type_map[flag]
-
         self.percent = percent
         self.features = features
         self.target = target
         self.scale = scale
         self.timeenc = timeenc
         self.freq = freq
-
         # self.percent = percent
         self.root_path = root_path
         self.data_path = data_path
         self.__read_data__()
+
 
         self.enc_in = self.data_x.shape[-1]
         self.tot_len = len(self.data_x) - self.seq_len - self.pred_len + 1

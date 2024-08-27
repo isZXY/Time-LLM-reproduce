@@ -6,7 +6,7 @@ from torch import nn, optim
 from torch.optim import lr_scheduler
 from tqdm import tqdm
 
-from models import Autoformer, DLinear, TimeLLM
+from models import Autoformer, DLinear, TimeLLM, TimeLLM_Classification
 
 from data_provider.data_factory import data_provider
 import time
@@ -27,7 +27,7 @@ torch.manual_seed(fix_seed)
 np.random.seed(fix_seed)
 
 # basic config
-parser.add_argument('--task_name', type=str, required=True, default='long_term_forecast',
+parser.add_argument('--task_name', type=str, required=True, default='classification',
                     help='task name, options:[long_term_forecast, short_term_forecast, imputation, classification, anomaly_detection]')
 parser.add_argument('--is_training', type=int, required=True, default=1, help='status')
 parser.add_argument('--model_id', type=str, required=True, default='test', help='model id')
@@ -55,8 +55,11 @@ parser.add_argument('--checkpoints', type=str, default='./checkpoints/', help='l
 # forecasting task
 parser.add_argument('--seq_len', type=int, default=96, help='input sequence length') # 多少时间步长的历史数据，即T time steps
 parser.add_argument('--label_len', type=int, default=48, help='start token length') # 定义模型在进行预测时的起始部分长度？
-parser.add_argument('--pred_len', type=int, default=96, help='prediction sequence length') # 模型要预测的未来时间步长的数量，即H
-parser.add_argument('--seasonal_patterns', type=str, default='Monthly', help='subset for M4') # 季节性模式
+# parser.add_argument('--pred_len', type=int, default=96, help='prediction sequence length') # 模型要预测的未来时间步长的数量，即H
+#parser.add_argument('--seasonal_patterns', type=str, default='Monthly', help='subset for M4') # 季节性模式
+
+# classification task
+parser.add_argument('--num_classes',type=int,default=7,help='classification category class number')
 
 # model define
 parser.add_argument('--enc_in', type=int, default=7, help='encoder input size') # 输入维度，即输入特征的数量，应该是N
@@ -122,21 +125,26 @@ for ii in range(args.itr):
         args.factor,
         args.embed,
         args.des, ii)
-
+    # 改: 数据输入
+    # 数据准备
     train_data, train_loader = data_provider(args, 'train')
     vali_data, vali_loader = data_provider(args, 'val')
     test_data, test_loader = data_provider(args, 'test')
 
+    # 模型定义
     if args.model == 'Autoformer':
         model = Autoformer.Model(args).float()
     elif args.model == 'DLinear':
         model = DLinear.Model(args).float()
     else:
-        model = TimeLLM.Model(args).float()
+        if args.task_name == 'long_term_forecast' or 'short_term_forecast':
+            model = TimeLLM.Model(args).float()
+        elif args.task_name == 'classification':
+            model = TimeLLM_Classification.Model(args).float() # 改：模型定义
 
     path = os.path.join(args.checkpoints,
                         setting + '-' + args.model_comment)  # unique checkpoint saving path
-    args.content = load_content(args)
+    args.content = load_content(args) # 加载prompt
     if not os.path.exists(path) and accelerator.is_local_main_process:
         os.makedirs(path)
 
@@ -149,9 +157,10 @@ for ii in range(args.itr):
     for p in model.parameters():
         if p.requires_grad is True:
             trained_parameters.append(p)
+    # 定义损失函数和优化器
+    model_optim = optim.Adam(trained_parameters, lr=args.learning_rate) # 优化器
 
-    model_optim = optim.Adam(trained_parameters, lr=args.learning_rate)
-
+    # 学习率调度器
     if args.lradj == 'COS':
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(model_optim, T_max=20, eta_min=1e-8)
     else:
@@ -160,9 +169,10 @@ for ii in range(args.itr):
                                             pct_start=args.pct_start,
                                             epochs=args.train_epochs,
                                             max_lr=args.learning_rate)
-
-    criterion = nn.MSELoss()
+    # 损失函数
+    criterion = nn.CrossEntropyLoss()
     mae_metric = nn.L1Loss()
+
 
     train_loader, vali_loader, test_loader, model, model_optim, scheduler = accelerator.prepare(
         train_loader, vali_loader, test_loader, model, model_optim, scheduler)
@@ -170,6 +180,7 @@ for ii in range(args.itr):
     if args.use_amp:
         scaler = torch.cuda.amp.GradScaler()
 
+    # 训练循环
     for epoch in range(args.train_epochs):
         iter_count = 0
         train_loss = []
@@ -185,34 +196,24 @@ for ii in range(args.itr):
             batch_x_mark = batch_x_mark.float().to(accelerator.device)
             batch_y_mark = batch_y_mark.float().to(accelerator.device)
 
-            # decoder input
-            dec_inp = torch.zeros_like(batch_y[:, -args.pred_len:, :]).float().to(
-                accelerator.device)
-            dec_inp = torch.cat([batch_y[:, :args.label_len, :], dec_inp], dim=1).float().to(
-                accelerator.device)
-
             # encoder - decoder
+            ## 改: 该结构
+            ## encoder(with or without amp)
             if args.use_amp:
                 with torch.cuda.amp.autocast():
                     if args.output_attention:
-                        outputs = model(batch_x, batch_x_mark, dec_inp, batch_y_mark)[0]
+                        logits = model(batch_x, batch_x_mark, dec_inp, batch_y_mark)[0]
                     else:
-                        outputs = model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+                        logits = model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
 
-                    f_dim = -1 if args.features == 'MS' else 0
-                    outputs = outputs[:, -args.pred_len:, f_dim:]
-                    batch_y = batch_y[:, -args.pred_len:, f_dim:].to(accelerator.device)
-                    loss = criterion(outputs, batch_y)
+                    loss = criterion(logits, batch_y)
                     train_loss.append(loss.item())
             else:
                 if args.output_attention:
-                    outputs = model(batch_x, batch_x_mark, dec_inp, batch_y_mark)[0]
+                    logits = model(batch_x, batch_x_mark, dec_inp, batch_y_mark)[0]
                 else:
-                    outputs = model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+                    logits = model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
 
-                f_dim = -1 if args.features == 'MS' else 0
-                outputs = outputs[:, -args.pred_len:, f_dim:]
-                batch_y = batch_y[:, -args.pred_len:, f_dim:]
                 loss = criterion(outputs, batch_y)
                 train_loss.append(loss.item())
 
