@@ -28,7 +28,6 @@ class FlattenHead(nn.Module):
 
 
 class Model(nn.Module):
-
     def __init__(self, configs, patch_len=16, stride=8):
         super(Model, self).__init__()
         self.task_name = configs.task_name
@@ -187,7 +186,7 @@ class Model(nn.Module):
             self.output_projection = FlattenHead(configs.enc_in, self.head_nf, self.pred_len,
                                                  head_dropout=configs.dropout)
 
-        if self.task_name =='classification':
+        elif self.task_name =='classification':
             self.output_projection = 0 # :TODO
         else:
             raise NotImplementedError
@@ -205,7 +204,7 @@ class Model(nn.Module):
     def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
         # 1. Input Embedding
         ##1.1normalize
-        x_enc = self.normalize_layers(x_enc, 'norm') # 
+        x_enc = self.normalize_layers(x_enc, 'norm') # RevIN
 
 
         B, T, N = x_enc.size()  #获取输入数据的大小 B 表示批量大小，T 表示时间步数，N 表示特征维度
@@ -243,12 +242,16 @@ class Model(nn.Module):
         prompt = self.tokenizer(prompt, return_tensors="pt", padding=True, truncation=True, max_length=2048).input_ids # 将prompt tokenize
         prompt_embeddings = self.llm_model.get_input_embeddings()(prompt.to(x_enc.device))  #将 prompt Embedding为高维向量
         ## 1.3 线性层Embedding到dm
-        source_embeddings = self.mapping_layer(self.word_embeddings.permute(1, 0)).permute(1, 0) # mapping_layer是使用一个线性层将llama的token嵌入矩阵映射到一个1000维度的token矩阵
+        source_embeddings = self.mapping_layer(self.word_embeddings.permute(1, 0)).permute(1, 0) # mapping_layer是使用一个线性层将llama的token嵌入矩阵(可能1024维度？）映射到一个1000维度的token矩阵
+        
         ## 2.1 通过patch_embedding重编码输入
-        x_enc = x_enc.permute(0, 2, 1).contiguous()# 变为B,N,T形状
-        enc_out, n_vars = self.patch_embedding(x_enc.to(torch.bfloat16)) # 通过patch_embedding重编码输入
+        x_enc = x_enc.permute(0, 2, 1).contiguous()# 变为B,N,T形状(batch, 特征维度，时序长度)
+
+        # Input Embedding
+        enc_out, n_vars = self.patch_embedding(x_enc.to(torch.bfloat16)) # 通过patch_embedding重编码输入,(B,N,T) -> (B * N,num_patches P, d_model dm)
+
         ## 2.2 Patch 重编程
-        enc_out = self.reprogramming_layer(enc_out, source_embeddings, source_embeddings)
+        enc_out = self.reprogramming_layer(enc_out, source_embeddings, source_embeddings) # 
 
         # 将prompt和reprogram的内容concat起来输入llama 
         llama_enc_out = torch.cat([prompt_embeddings, enc_out], dim=1)
@@ -347,6 +350,8 @@ class Model(nn.Module):
 
 class ReprogrammingLayer(nn.Module):
     def __init__(self, d_model, n_heads, d_keys=None, d_llm=None, attention_dropout=0.1):
+        # self.reprogramming_layer = ReprogrammingLayer(configs.d_model, configs.n_heads, self.d_ff, self.d_llm) 
+        # patch模型的隐藏层维度 16; n_heads num of heads 8; d_ff前馈神经网络的维度 32 # d_llm LLM model dimension 7b 4096
         super(ReprogrammingLayer, self).__init__()
 
         d_keys = d_keys or (d_model // n_heads)
@@ -359,8 +364,9 @@ class ReprogrammingLayer(nn.Module):
         self.dropout = nn.Dropout(attention_dropout)
 
     def forward(self, target_embedding, source_embedding, value_embedding):
-        B, L, _ = target_embedding.shape
-        S, _ = source_embedding.shape
+        # target_embedding <-> enc_out((B * N,num_patches P, d_model dm)),source_embedding <-> source_embeddings,value_embedding <-> source_embeddings)
+        B, L, _ = target_embedding.shape # (B * N,num_patches P, d_model dm)
+        S, _ = source_embedding.shape # 
         H = self.n_heads
 
         target_embedding = self.query_projection(target_embedding).view(B, L, H, -1)

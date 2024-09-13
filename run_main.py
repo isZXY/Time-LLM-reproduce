@@ -6,7 +6,7 @@ from torch import nn, optim
 from torch.optim import lr_scheduler
 from tqdm import tqdm
 
-from models import Autoformer, DLinear, TimeLLM, TimeLLM_Classification
+from models import Autoformer, DLinear, TimeLLM
 
 from data_provider.data_factory import data_provider
 import time
@@ -53,10 +53,10 @@ parser.add_argument('--freq', type=str, default='h',
 parser.add_argument('--checkpoints', type=str, default='./checkpoints/', help='location of model checkpoints')
 
 # forecasting task
-parser.add_argument('--seq_len', type=int, default=96, help='input sequence length') # 多少时间步长的历史数据，即T time steps
-parser.add_argument('--label_len', type=int, default=48, help='start token length') # 定义模型在进行预测时的起始部分长度？
-# parser.add_argument('--pred_len', type=int, default=96, help='prediction sequence length') # 模型要预测的未来时间步长的数量，即H
-#parser.add_argument('--seasonal_patterns', type=str, default='Monthly', help='subset for M4') # 季节性模式
+parser.add_argument('--seq_len', type=int, default=96, help='input sequence length') # 输入序列的长度，即模型每次输入的时间步数（通常是历史数据的长度）。
+parser.add_argument('--label_len', type=int, default=48, help='start token length') # 起始标记长度，通常指的是模型在生成预测时所用的最后一段已知序列的长度。
+parser.add_argument('--pred_len', type=int, default=96, help='prediction sequence length') # 预测序列的长度，即模型需要预测的未来时间步数。
+parser.add_argument('--seasonal_patterns', type=str, default='Monthly', help='subset for M4') # 季节性模式
 
 # classification task
 parser.add_argument('--num_classes',type=int,default=7,help='classification category class number')
@@ -65,7 +65,7 @@ parser.add_argument('--num_classes',type=int,default=7,help='classification cate
 parser.add_argument('--enc_in', type=int, default=7, help='encoder input size') # 输入维度，即输入特征的数量，应该是N
 parser.add_argument('--dec_in', type=int, default=7, help='decoder input size') # 解码器所需的输入特征数量
 parser.add_argument('--c_out', type=int, default=7, help='output size') # 模型的输出维度，即输出特征的数量
-parser.add_argument('--d_model', type=int, default=16, help='dimension of model') # 模型的隐藏层维度
+parser.add_argument('--d_model', type=int, default=16, help='dimension of model') # patch模型的隐藏层维度
 parser.add_argument('--n_heads', type=int, default=8, help='num of heads') # 多头注意力机制中头的数量
 parser.add_argument('--e_layers', type=int, default=2, help='num of encoder layers') # 编码器的层数
 parser.add_argument('--d_layers', type=int, default=1, help='num of decoder layers') # 解码器的层数
@@ -131,6 +131,7 @@ for ii in range(args.itr):
     vali_data, vali_loader = data_provider(args, 'val')
     test_data, test_loader = data_provider(args, 'test')
 
+
     # 模型定义
     if args.model == 'Autoformer':
         model = Autoformer.Model(args).float()
@@ -139,8 +140,8 @@ for ii in range(args.itr):
     else:
         if args.task_name == 'long_term_forecast' or 'short_term_forecast':
             model = TimeLLM.Model(args).float()
-        elif args.task_name == 'classification':
-            model = TimeLLM_Classification.Model(args).float() # 改：模型定义
+        # elif args.task_name == 'classification':
+        #     model = TimeLLM_Classification.Model(args).float() # 改：模型定义
 
     path = os.path.join(args.checkpoints,
                         setting + '-' + args.model_comment)  # unique checkpoint saving path
@@ -187,7 +188,7 @@ for ii in range(args.itr):
 
         model.train()
         epoch_time = time.time()
-        for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in tqdm(enumerate(train_loader)):
+        for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in tqdm(enumerate(train_loader)): # 原始sequence,预测sequence，各自对应的时间戳 
             iter_count += 1
             model_optim.zero_grad()
 
@@ -196,8 +197,13 @@ for ii in range(args.itr):
             batch_x_mark = batch_x_mark.float().to(accelerator.device)
             batch_y_mark = batch_y_mark.float().to(accelerator.device)
 
+            # decoder input
+            dec_inp = torch.zeros_like(batch_y[:, -args.pred_len:, :]).float().to(
+                accelerator.device) # 后面全0，用于预测，相当于mask了？ (选取了 batch_y 中最后 pred_len 长度的序列)
+            dec_inp = torch.cat([batch_y[:, :args.label_len, :], dec_inp], dim=1).float().to(
+                accelerator.device) # 前面就是要使用的
             # encoder - decoder
-            ## 改: 该结构
+            ## 改: 结构
             ## encoder(with or without amp)
             if args.use_amp:
                 with torch.cuda.amp.autocast():

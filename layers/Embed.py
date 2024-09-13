@@ -40,7 +40,7 @@ class TokenEmbedding(nn.Module):
 
     def forward(self, x):
         x = self.tokenConv(x.permute(0, 2, 1)).transpose(1, 2)
-        return x
+        return x # (B * N, P, d_model)
 
 
 class FixedEmbedding(nn.Module):
@@ -147,26 +147,30 @@ class DataEmbedding_wo_pos(nn.Module):
 
 
 class ReplicationPad1d(nn.Module):
+    '''
+     ReplicationPad1d 层的作用是对输入张量进行一种特殊的“填充”操作，即复制输入张量的最后一列（在时间维度上）若干次，并将这些复制的列拼接到原始输入的末尾
+    '''
     def __init__(self, padding) -> None:
         super(ReplicationPad1d, self).__init__()
         self.padding = padding
 
     def forward(self, input: Tensor) -> Tensor:
-        replicate_padding = input[:, :, -1].unsqueeze(-1).repeat(1, 1, self.padding[-1])
-        output = torch.cat([input, replicate_padding], dim=-1)
+        # input (batch, 特征维度，时序长度)(B,N,T)
+        replicate_padding = input[:, :, -1].unsqueeze(-1).repeat(1, 1, self.padding[-1])# (B,N) ->(B,N,1) ->(B, N, stride)
+        output = torch.cat([input, replicate_padding], dim=-1) #(B,N,T+stride)
         return output
 
 
 class PatchEmbedding(nn.Module):
-    def __init__(self, d_model, patch_len, stride, dropout):
+    def __init__(self, d_model, patch_len, stride, dropout): # patch模型的隐藏层维度,patch 长度 Lp, 步幅
         super(PatchEmbedding, self).__init__()
         # Patching
-        self.patch_len = patch_len
-        self.stride = stride
+        self.patch_len = patch_len # patch 长度
+        self.stride = stride # S,sliding stride
         self.padding_patch_layer = ReplicationPad1d((0, stride))
 
         # Backbone, Input encoding: projection of feature vectors onto a d-dim vector space
-        self.value_embedding = TokenEmbedding(patch_len, d_model)
+        self.value_embedding = TokenEmbedding(patch_len, d_model) # (Lp--linear--> dm)
 
         # Positional embedding
         # self.position_embedding = PositionalEmbedding(d_model)
@@ -176,13 +180,13 @@ class PatchEmbedding(nn.Module):
 
     def forward(self, x):
         # do patching
-        n_vars = x.shape[1]
-        x = self.padding_patch_layer(x)
-        x = x.unfold(dimension=-1, size=self.patch_len, step=self.stride)
-        x = torch.reshape(x, (x.shape[0] * x.shape[1], x.shape[2], x.shape[3]))
+        # x:(batch, 特征维度，时序长度)(B,N,T)
+        n_vars = x.shape[1] # 特征维度N
+        x = self.padding_patch_layer(x) # (B,N,T) -> (B,N,T+stride)
+        x = x.unfold(dimension=-1, size=self.patch_len, step=self.stride) # padding展开，长度是patch_len,步长是stride # (B, N, num_patches, patch_len)
+        x = torch.reshape(x, (x.shape[0] * x.shape[1], x.shape[2], x.shape[3])) # (B*N, num_patches P, patch_len Lp)
         # Input encoding
-        x = self.value_embedding(x)
-        return self.dropout(x), n_vars
+        x = self.value_embedding(x) # 用的是卷积而非线性层 -> Embedding(B * N, P, d_model dm)
 
 
 class DataEmbedding_wo_time(nn.Module):

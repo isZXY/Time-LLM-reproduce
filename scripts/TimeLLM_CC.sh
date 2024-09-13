@@ -17,11 +17,11 @@ accelerate launch --multi_gpu --mixed_precision bf16 --num_processes $num_proces
   --data_path output.csv \
   --model_id CC_512_96 \
   --model $model_name \
-  --data ETTh1  \
+  --data CC  \
   --features M \
-  --seq_len 512 \
-  --label_len 48 \
-  --pred_len 96 \
+  --seq_len 96 \
+  --label_len 24 \
+  --pred_len 24 \
   --e_layers 2 \
   --d_layers 1 \
   --factor 3 \
