@@ -10,13 +10,13 @@ d_model=32
 d_ff=128
 
 comment='CongestionControl'
-accelerate launch  run_main.py \
+python run_main.py \
   --task_name long_term_forecast \
   --is_training 0 \
   --root_path ./dataset/CC/ \
   --data_path output.csv \
   --model_id CC_512_96 \
-  --model $model_name \
+  --model  TimeLLM\
   --data CC  \
   --features M \
   --seq_len 96 \
@@ -28,8 +28,8 @@ accelerate launch  run_main.py \
   --enc_in 321 \
   --dec_in 321 \
   --c_out 321 \
-  --batch_size $batch_size \
-  --learning_rate $learning_rate \
-  --llm_layers $llama_layers \
-  --train_epochs $train_epochs \
-  --model_comment $comment
+  --batch_size 8 \
+  --learning_rate 0.01 \
+  --llm_layers 32 \
+  --train_epochs 10 \
+  --model_comment 'CongestionControl'
