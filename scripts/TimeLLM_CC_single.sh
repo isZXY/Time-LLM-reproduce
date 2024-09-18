@@ -1,16 +1,6 @@
-model_name=TimeLLM
-train_epochs=10
-learning_rate=0.01
-llama_layers=32
-
-master_port=15294
-num_process=2
-batch_size=8
-d_model=32
-d_ff=128
 
 comment='CongestionControl'
-python run_main.py \
+python CC.py \
   --task_name long_term_forecast \
   --is_training 0 \
   --root_path ./dataset/CC/ \
@@ -28,7 +18,7 @@ python run_main.py \
   --enc_in 321 \
   --dec_in 321 \
   --c_out 321 \
-  --batch_size 8 \
+  --batch_size 1 \
   --learning_rate 0.01 \
   --llm_layers 32 \
   --train_epochs 10 \

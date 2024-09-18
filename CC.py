@@ -1,24 +1,20 @@
-import argparse
 import torch
-from accelerate import Accelerator, DeepSpeedPlugin
-from accelerate import DistributedDataParallelKwargs
 from torch import nn, optim
+from torch.utils.data import DataLoader
+from data_provider.data_factory import data_provider
+import random
 from torch.optim import lr_scheduler
+
+import numpy as np
+import argparse
+from models import TimeLLM
+import os
+from utils.tools import del_files, EarlyStopping, adjust_learning_rate, vali,vali_no_accelerator, load_content
+import time
 from tqdm import tqdm
 
-from models import Autoformer, DLinear, TimeLLM
-import pdb
-from data_provider.data_factory import data_provider
-import time
-import random
-import numpy as np
-import os
 
-os.environ['CURL_CA_BUNDLE'] = ''
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:64"
-
-from utils.tools import del_files, EarlyStopping, adjust_learning_rate, vali, load_content
-
+# 参数解析
 parser = argparse.ArgumentParser(description='Time-LLM')
 
 fix_seed = 2021
@@ -102,9 +98,6 @@ parser.add_argument('--llm_layers', type=int, default=6)
 parser.add_argument('--percent', type=int, default=100)
 
 args = parser.parse_args()
-ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
-deepspeed_plugin = DeepSpeedPlugin(hf_ds_config='./ds_config_zero2.json')
-accelerator = Accelerator(kwargs_handlers=[ddp_kwargs], deepspeed_plugin=deepspeed_plugin)
 
 for ii in range(args.itr):
     # setting record of experiments
@@ -125,34 +118,27 @@ for ii in range(args.itr):
         args.factor,
         args.embed,
         args.des, ii)
-    # 改: 数据输入
     # 数据准备
     train_data, train_loader = data_provider(args, 'train')
     vali_data, vali_loader = data_provider(args, 'val')
     test_data, test_loader = data_provider(args, 'test')
 
-
-    # 模型定义
-    if args.model == 'Autoformer':
-        model = Autoformer.Model(args).float()
-    elif args.model == 'DLinear':
-        model = DLinear.Model(args).float()
-    else:
-        if args.task_name == 'long_term_forecast' or 'short_term_forecast':
-            model = TimeLLM.Model(args).float()
-        # elif args.task_name == 'classification':
-        #     model = TimeLLM_Classification.Model(args).float() # 改：模型定义
-
+    # device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    # 模型加载
+    model = TimeLLM.Model(args).float()
+    model.to(device)
     path = os.path.join(args.checkpoints,
                         setting + '-' + args.model_comment)  # unique checkpoint saving path
     args.content = load_content(args) # 加载prompt
-    if not os.path.exists(path) and accelerator.is_local_main_process:
+    if not os.path.exists(path):
         os.makedirs(path)
 
     time_now = time.time()
 
     train_steps = len(train_loader)
-    early_stopping = EarlyStopping(accelerator=accelerator, patience=args.patience)
+    early_stopping = EarlyStopping(patience=args.patience)
 
     trained_parameters = []
     for p in model.parameters():
@@ -160,6 +146,7 @@ for ii in range(args.itr):
             trained_parameters.append(p)
     # 定义损失函数和优化器
     model_optim = optim.Adam(trained_parameters, lr=args.learning_rate) # 优化器
+
 
     # 学习率调度器
     if args.lradj == 'COS':
@@ -175,11 +162,6 @@ for ii in range(args.itr):
     mae_metric = nn.L1Loss()
 
 
-    train_loader, vali_loader, test_loader, model, model_optim, scheduler = accelerator.prepare(
-        train_loader, vali_loader, test_loader, model, model_optim, scheduler)
-
-    if args.use_amp:
-        scaler = torch.cuda.amp.GradScaler()
 
     # 训练循环
     for epoch in range(args.train_epochs):
@@ -192,86 +174,69 @@ for ii in range(args.itr):
             iter_count += 1
             model_optim.zero_grad()
 
-            batch_x = batch_x.float().to(accelerator.device)
-            batch_y = batch_y.float().to(accelerator.device)
-            batch_x_mark = batch_x_mark.float().to(accelerator.device)
-            batch_y_mark = batch_y_mark.float().to(accelerator.device)
+            batch_x = batch_x.float().to(device)
+            batch_y = batch_y.float().to(device)
+            batch_x_mark = batch_x_mark.float().to(device)
+            batch_y_mark = batch_y_mark.float().to(device)
 
             # decoder input
-            dec_inp = torch.zeros_like(batch_y[:, -args.pred_len:, :]).float().to(
-                accelerator.device) # 后面全0，用于预测，相当于mask了？ (选取了 batch_y 中最后 pred_len 长度的序列)
-            dec_inp = torch.cat([batch_y[:, :args.label_len, :], dec_inp], dim=1).float().to(
-                accelerator.device) # 前面就是要使用的
+            dec_inp = torch.zeros_like(batch_y[:, -args.pred_len:, :]).float().to(device) # 后面全0，用于预测，相当于mask了？ (选取了 batch_y 中最后 pred_len 长度的序列)
+            dec_inp = torch.cat([batch_y[:, :args.label_len, :], dec_inp], dim=1).float().to(device) # 前面就是要使用的
             # encoder - decoder
             ## 改: 结构
             ## encoder(with or without amp)
-            if args.use_amp:
-                with torch.cuda.amp.autocast():
-                    if args.output_attention:
-                        logits = model(batch_x, batch_x_mark, dec_inp, batch_y_mark)[0]
-                    else:
-                        logits = model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
-
-                    loss = criterion(logits, batch_y)
-                    train_loss.append(loss.item())
+            if args.output_attention:
+                outputs = model(batch_x, batch_x_mark, dec_inp, batch_y_mark)[0]
             else:
-                if args.output_attention:
-                    logits = model(batch_x, batch_x_mark, dec_inp, batch_y_mark)[0]
-                else:
-                    logits = model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+                outputs = model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
 
-                loss = criterion(outputs, batch_y)
-                train_loss.append(loss.item())
+            loss = criterion(outputs, batch_y)
+            train_loss.append(loss.item())
 
             if (i + 1) % 100 == 0:
-                accelerator.print(
+                print(
                     "\titers: {0}, epoch: {1} | loss: {2:.7f}".format(i + 1, epoch + 1, loss.item()))
                 speed = (time.time() - time_now) / iter_count
                 left_time = speed * ((args.train_epochs - epoch) * train_steps - i)
-                accelerator.print('\tspeed: {:.4f}s/iter; left time: {:.4f}s'.format(speed, left_time))
+                print('\tspeed: {:.4f}s/iter; left time: {:.4f}s'.format(speed, left_time))
                 iter_count = 0
                 time_now = time.time()
 
-            if args.use_amp:
-                scaler.scale(loss).backward()
-                scaler.step(model_optim)
-                scaler.update()
-            else:
-                accelerator.backward(loss)
-                model_optim.step()
 
-            if args.lradj == 'TST':
-                adjust_learning_rate(accelerator, model_optim, scheduler, epoch + 1, args, printout=False)
-                scheduler.step()
+            loss.backward()
+            model_optim.step()
 
-        accelerator.print("Epoch: {} cost time: {}".format(epoch + 1, time.time() - epoch_time))
+            # if args.lradj == 'TST':
+            #     adjust_learning_rate(accelerator, model_optim, scheduler, epoch + 1, args, printout=False)
+            #     scheduler.step()
+
+        print("Epoch: {} cost time: {}".format(epoch + 1, time.time() - epoch_time))
         train_loss = np.average(train_loss)
-        vali_loss, vali_mae_loss = vali(args, accelerator, model, vali_data, vali_loader, criterion, mae_metric)
-        test_loss, test_mae_loss = vali(args, accelerator, model, test_data, test_loader, criterion, mae_metric)
-        accelerator.print(
+        vali_loss, vali_mae_loss = vali_no_accelerator(args, device, model, vali_data, vali_loader, criterion, mae_metric)
+        test_loss, test_mae_loss = vali_no_accelerator(args, device, model, test_data, test_loader, criterion, mae_metric)
+        print(
             "Epoch: {0} | Train Loss: {1:.7f} Vali Loss: {2:.7f} Test Loss: {3:.7f} MAE Loss: {4:.7f}".format(
                 epoch + 1, train_loss, vali_loss, test_loss, test_mae_loss))
 
         early_stopping(vali_loss, model, path)
         if early_stopping.early_stop:
-            accelerator.print("Early stopping")
+            print("Early stopping")
             break
 
         if args.lradj != 'TST':
             if args.lradj == 'COS':
                 scheduler.step()
-                accelerator.print("lr = {:.10f}".format(model_optim.param_groups[0]['lr']))
+                print("lr = {:.10f}".format(model_optim.param_groups[0]['lr']))
             else:
                 if epoch == 0:
                     args.learning_rate = model_optim.param_groups[0]['lr']
-                    accelerator.print("lr = {:.10f}".format(model_optim.param_groups[0]['lr']))
-                adjust_learning_rate(accelerator, model_optim, scheduler, epoch + 1, args, printout=True)
+                    print("lr = {:.10f}".format(model_optim.param_groups[0]['lr']))
+                adjust_learning_rate(model_optim, scheduler, epoch + 1, args, printout=True)
 
         else:
-            accelerator.print('Updating learning rate to {}'.format(scheduler.get_last_lr()[0]))
+            print('Updating learning rate to {}'.format(scheduler.get_last_lr()[0]))
 
-accelerator.wait_for_everyone()
-if accelerator.is_local_main_process:
+
     path = './checkpoints'  # unique checkpoint saving path
     del_files(path)  # delete checkpoint files
-    accelerator.print('success delete checkpoints')
+    print('success delete checkpoints')

@@ -8,7 +8,7 @@ from tqdm import tqdm
 plt.switch_backend('agg')
 
 
-def adjust_learning_rate(accelerator, optimizer, scheduler, epoch, args, printout=True):
+def adjust_learning_rate( optimizer, scheduler, epoch, args, printout=True,accelerator=None):
     if args.lradj == 'type1':
         lr_adjust = {epoch: args.learning_rate * (0.5 ** ((epoch - 1) // 1))}
     elif args.lradj == 'type2':
@@ -185,6 +185,55 @@ def vali(args, accelerator, model, vali_data, vali_loader, criterion, mae_metric
     model.train()
     return total_loss, total_mae_loss
 
+def vali_no_accelerator(args,device, model, vali_data, vali_loader, criterion, mae_metric):
+    total_loss = []
+    total_mae_loss = []
+    model.eval()
+    with torch.no_grad():
+        for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in tqdm(enumerate(vali_loader)):
+            batch_x = batch_x.float().to(device)
+            batch_y = batch_y.float()
+
+            batch_x_mark = batch_x_mark.float().to(device)
+            batch_y_mark = batch_y_mark.float().to(device)
+
+            # decoder input
+            dec_inp = torch.zeros_like(batch_y[:, -args.pred_len:, :]).float()
+            dec_inp = torch.cat([batch_y[:, :args.label_len, :], dec_inp], dim=1).float().to(device)
+            # encoder - decoder
+            if args.use_amp:
+                with torch.cuda.amp.autocast():
+                    if args.output_attention:
+                        outputs = model(batch_x, batch_x_mark, dec_inp, batch_y_mark)[0]
+                    else:
+                        outputs = model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+            else:
+                if args.output_attention:
+                    outputs = model(batch_x, batch_x_mark, dec_inp, batch_y_mark)[0]
+                else:
+                    outputs = model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+
+            # outputs, batch_y = accelerator.gather_for_metrics((outputs, batch_y))
+
+            f_dim = -1 if args.features == 'MS' else 0
+            outputs = outputs[:, -args.pred_len:, f_dim:]
+            batch_y = batch_y[:, -args.pred_len:, f_dim:].to(device)
+
+            pred = outputs.detach()
+            true = batch_y.detach()
+
+            loss = criterion(pred, true)
+
+            mae_loss = mae_metric(pred, true)
+
+            total_loss.append(loss.item())
+            total_mae_loss.append(mae_loss.item())
+
+    total_loss = np.average(total_loss)
+    total_mae_loss = np.average(total_mae_loss)
+
+    model.train()
+    return total_loss, total_mae_loss
 
 def test(args, accelerator, model, train_loader, vali_loader, criterion):
     x, _ = train_loader.dataset.last_insample_window()

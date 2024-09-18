@@ -10,9 +10,9 @@ d_model=32
 d_ff=128
 
 comment='CongestionControl'
-accelerate launch  run_main.py \
+accelerate launch --multi_gpu --mixed_precision bf16 --num_processes $num_process --main_process_port $master_port  run_main.py \
   --task_name long_term_forecast \
-  --is_training 0 \
+  --is_training 1 \
   --root_path ./dataset/CC/ \
   --data_path output.csv \
   --model_id CC_512_96 \

@@ -196,6 +196,7 @@ class Model(nn.Module):
     def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None):
         if self.task_name == 'long_term_forecast' or self.task_name == 'short_term_forecast':
             dec_out = self.forecast(x_enc, x_mark_enc, x_dec, x_mark_dec)
+            return dec_out[:, -self.pred_len:, :]
         if self.task_name == 'classification':
             dec_out = self.forecast_for_classification(x_enc, x_mark_enc, x_dec, x_mark_dec)
             return dec_out[:, -self.pred_len:, :]
@@ -248,7 +249,7 @@ class Model(nn.Module):
         x_enc = x_enc.permute(0, 2, 1).contiguous()# 变为B,N,T形状(batch, 特征维度，时序长度)
 
         # Input Embedding
-        enc_out, n_vars = self.patch_embedding(x_enc.to(torch.bfloat16)) # 通过patch_embedding重编码输入,(B,N,T) -> (B * N,num_patches P, d_model dm)
+        enc_out, n_vars = self.patch_embedding(x_enc.to(torch.float32)) # 通过patch_embedding重编码输入,(B,N,T) -> (B * N,num_patches P, d_model dm)
 
         ## 2.2 Patch 重编程
         enc_out = self.reprogramming_layer(enc_out, source_embeddings, source_embeddings) # 
@@ -315,7 +316,7 @@ class Model(nn.Module):
         source_embeddings = self.mapping_layer(self.word_embeddings.permute(1, 0)).permute(1, 0) # mapping_layer是使用一个线性层将llama的token嵌入矩阵映射到一个1000维度的token矩阵
         ## 2.1 通过patch_embedding重编码输入
         x_enc = x_enc.permute(0, 2, 1).contiguous()# 变为B,N,T形状
-        enc_out, n_vars = self.patch_embedding(x_enc.to(torch.bfloat16)) # 通过patch_embedding重编码输入
+        enc_out, n_vars = self.patch_embedding(x_enc.to(torch.float32)) # 通过patch_embedding重编码输入
         ## 2.2 Patch 重编程
         enc_out = self.reprogramming_layer(enc_out, source_embeddings, source_embeddings)
 

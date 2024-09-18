@@ -187,7 +187,7 @@ class PatchEmbedding(nn.Module):
         x = torch.reshape(x, (x.shape[0] * x.shape[1], x.shape[2], x.shape[3])) # (B*N, num_patches P, patch_len Lp)
         # Input encoding
         x = self.value_embedding(x) # 用的是卷积而非线性层 -> Embedding(B * N, P, d_model dm)
-
+        return self.dropout(x), n_vars
 
 class DataEmbedding_wo_time(nn.Module):
     def __init__(self, c_in, d_model, embed_type='fixed', freq='h', dropout=0.1):

@@ -472,12 +472,11 @@ class Dataset_CC(Dataset):
 
         self.data_x = data[border1:border2]
         self.data_y = data[border1:border2]
-        self.data_stamp = data_stamp
+        self.data_stamp = data_stamp.values
 
     def __getitem__(self, index):
         feat_id = index // self.tot_len
         s_begin = index % self.tot_len
-
         s_end = s_begin + self.seq_len
         r_begin = s_end - self.label_len
         r_end = r_begin + self.label_len + self.pred_len
